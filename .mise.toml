@@ -1,0 +1,23 @@
+[tools]
+python = "3.14.5"
+uv = "0.11.14"
+
+[tasks.lint]
+description = "Run ruff linter"
+run = "uv run ruff check src/ tests/"
+
+[tasks.format]
+description = "Format code with ruff"
+run = "uv run ruff format src/ tests/"
+
+[tasks.typecheck]
+description = "Run mypy type checker"
+run = "uv run mypy src/"
+
+[tasks.test]
+description = "Run pytest"
+run = "uv run pytest tests/"
+
+[tasks.check]
+description = "Run lint, typecheck, and test in parallel"
+depends = ["lint", "typecheck", "test"]
