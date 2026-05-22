@@ -33,3 +33,11 @@ mise.local.toml
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+
+# Docker
+docker-compose.override.yml
+
+# Node (ui/)
+ui/node_modules/
+ui/.next/
+ui/out/

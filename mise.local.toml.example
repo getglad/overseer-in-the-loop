@@ -1,0 +1,55 @@
+# THIS FILE IS COMMITTED — never paste real secrets here.
+#
+# Copy to `mise.local.toml` (gitignored) and populate. `mise` reads
+# `mise.local.toml` automatically and exposes [env] vars to every
+# `mise run ...` task.
+
+[env]
+
+# ---------------------------------------------------------------------------
+# LLM provider
+# ---------------------------------------------------------------------------
+
+# API key for the configured LLM provider. REQUIRED — the server raises
+# RuntimeError on startup if unset. For the default NVIDIA NIM endpoint,
+# get a free 1,000-credit key at https://build.nvidia.com.
+LLM_API_KEY = ""
+
+# Optional overrides. Defaults: NVIDIA NIM endpoint + GLM-5 model.
+# Uncomment + set to swap to any OpenAI-compatible provider. Examples:
+#   NVIDIA NIM:   "https://integrate.api.nvidia.com/v1"  (default)
+#   Azure OpenAI: "https://<resource>.openai.azure.com/openai/v1"
+#   Local vLLM:   "http://localhost:8001/v1"
+#   OpenAI:       "https://api.openai.com/v1"
+# LLM_BASE_URL = ""
+# LLM_MODEL = ""
+
+# ---------------------------------------------------------------------------
+# Observability (optional)
+# ---------------------------------------------------------------------------
+
+# OTLP/HTTP traces endpoint (e.g. "http://localhost:4318/v1/traces").
+# Telemetry is skipped if unset.
+# OTEL_ENDPOINT = ""
+
+# WebSocket URL the Next.js UI connects to (baked into the client bundle
+# at build/dev-start; restart the dev server after changing).
+# Defaults to "ws://localhost:8000/ws".
+# NEXT_PUBLIC_WS_URL = ""
+
+# ---------------------------------------------------------------------------
+# Gateway WebSocket access control
+# ---------------------------------------------------------------------------
+
+# Browser origins allowed to open the /ws socket — the Cross-Site WebSocket
+# Hijacking defense. Comma-separated. Defaults to the Next dev server
+# (http://localhost:3000,http://localhost:3001). MUST be set to your real UI
+# origin in any non-localhost deploy, or the browser UI is blocked.
+# GATEWAY_ALLOWED_ORIGINS = ""
+
+# Shared secret authenticating NON-browser clients (curl, a CLI), which send
+# no Origin. Server-only — do NOT expose it to the browser bundle; browsers are
+# authenticated by origin, not this token. Presented via Sec-WebSocket-Protocol,
+# so it must be a valid subprotocol token: no commas, whitespace, or +/=.
+# Unset ⇒ non-browser clients are allowed (fine for local dev).
+# GATEWAY_WS_TOKEN = ""

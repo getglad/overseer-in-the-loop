@@ -1,0 +1,83 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignoreUnknown": false,
+    "includes": ["**", "!.next", "!out", "!build", "!next-env.d.ts"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "error",
+        "noForEach": "error"
+      },
+      "correctness": {
+        "noUndeclaredDependencies": "error",
+        "noNestedComponentDefinitions": "error",
+        "useExhaustiveDependencies": "error"
+      },
+      "style": {
+        "noNegationElse": "error",
+        "useConst": "error",
+        "useSelfClosingElements": "error",
+        "noNestedTernary": "error",
+        "useCollapsedElseIf": "error",
+        "noParameterAssign": "error"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "error",
+        "noExplicitAny": "error",
+        "noEvolvingTypes": "error"
+      },
+      "a11y": {
+        "useSemanticElements": "error",
+        "useButtonType": "error",
+        "noAriaHiddenOnFocusable": "error",
+        "noPositiveTabindex": "error"
+      }
+    }
+  },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    },
+    "linter": {
+      "enabled": true
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "trailingCommas": "all",
+      "semicolons": "always"
+    }
+  },
+  "overrides": [
+    {
+      "includes": [
+        "**/*.test.ts",
+        "**/*.test.tsx",
+        "**/*.spec.ts",
+        "**/*.spec.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noExplicitAny": "off"
+          }
+        }
+      }
+    }
+  ]
+}

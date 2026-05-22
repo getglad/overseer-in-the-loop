@@ -1,6 +1,8 @@
 [tools]
 python = "3.14.5"
+node = "26.1.0"
 uv = "0.11.14"
+hivemind = "1.1.0"
 
 [tasks.lint]
 description = "Run ruff linter"
@@ -18,6 +20,32 @@ run = "uv run mypy src/"
 description = "Run pytest"
 run = "uv run pytest tests/"
 
+[tasks.sync]
+description = "Sync dependencies: Python (uv + NAT extras) + UI (npm)"
+run = """
+uv sync --extra nat \
+  && npm --prefix ui install
+"""
+
 [tasks.check]
 description = "Run lint, typecheck, and test in parallel"
 depends = ["lint", "typecheck", "test"]
+
+[tasks.serve]
+description = "Start the FastAPI agent gateway"
+# Bind to loopback only — the WS endpoint has no auth or origin check, so a
+# LAN-reachable bind would let any nearby host drive the agent's file tools.
+run = "uv run uvicorn src.server.app:app --reload --reload-dir src --host 127.0.0.1 --port 8000"
+
+[tasks."serve:ui"]
+description = "Start the Next.js dev server"
+dir = "ui"
+# hivemind injects a per-process PORT (server→5000, ui→5100) and `next dev` honors it,
+# which would otherwise move the UI off :3000. Pin PORT so the UI always lands on :3000
+# (matching the README), whether launched standalone or under hivemind.
+env = { PORT = "3000" }
+run = "npm run dev"
+
+[tasks.dev]
+description = "Start server + UI via hivemind (reads Procfile)"
+run = "hivemind"

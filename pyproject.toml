@@ -4,14 +4,28 @@ version = "0.1.0"
 description = "Code-first agent auto mode with NVIDIA's open-source agent stack"
 requires-python = ">=3.14"
 license-files = ["LICENSE"]
-dependencies = []
+dependencies = [
+    "pydantic>=2.0",
+    "structlog>=24.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "jinja2>=3.1.6",
+]
+
+[project.optional-dependencies]
+nat = [
+    "nvidia-nat>=1.7.0",
+    "nvidia-nat-langchain>=1.7.0",
+    "nvidia-nat-opentelemetry>=1.7.0",
+]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.9",
-    "mypy>=1.14",
-    "pytest>=8.0",
-    "pytest-asyncio>=0.25",
+    "ruff>=0.15",
+    "mypy>=2.0",
+    "pytest>=9.0",
+    "pytest-asyncio>=1.0",
+    "httpx>=0.28",
 ]
 
 [tool.ruff]
@@ -29,14 +43,23 @@ ignore = [
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.isort]
+known-first-party = ["src", "tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004", "ANN"]
+"src/server/app.py" = ["PLC0415"]      # deferred imports inside lifespan
+"src/server/router.py" = ["PLC0415"]   # deferred run_agent import inside handler
 
 [tool.mypy]
 python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["nat.*", "langchain_core.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
