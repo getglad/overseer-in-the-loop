@@ -12,6 +12,8 @@ REJECT_OPTION = BinaryHumanPromptOption(id="no", label="Reject", value="no")
 
 APPROVAL_TIMEOUT = 60
 
+REJECTION_MESSAGE = "Tool call was rejected by the user."
+
 
 async def prompt_binary_approval(prompt_text: str) -> bool:
     """Prompt the user for binary approval via NAT's Context.

@@ -53,3 +53,12 @@ LLM_API_KEY = ""
 # so it must be a valid subprotocol token: no commas, whitespace, or +/=.
 # Unset ⇒ non-browser clients are allowed (fine for local dev).
 # GATEWAY_WS_TOKEN = ""
+
+# ---------------------------------------------------------------------------
+# Agent workspace (post-3+)
+# ---------------------------------------------------------------------------
+
+# Working directory the agent's file tools (read/write/edit/grep/glob) can
+# touch. Defaults to the directory `mise run serve` was launched from.
+# Setting this overrides AgentSettings.workspace_root.
+# WORKSPACE_ROOT = ""

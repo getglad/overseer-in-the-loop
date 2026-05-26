@@ -47,7 +47,11 @@ convention = "google"
 known-first-party = ["src", "tests"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "PLR2004", "ANN"]
+"tests/**" = ["S101", "PLR2004", "ANN", "SLF001"]
+"src/tools/tool_registry.py" = [
+    "ANN401",   # Any in wrapper args — wrapping arbitrary LangChain tools
+    "ASYNC240", # pathlib in async — workspace validation is CPU-bound, not I/O
+]
 "src/server/app.py" = ["PLC0415"]      # deferred imports inside lifespan
 "src/server/router.py" = ["PLC0415"]   # deferred run_agent import inside handler
 
@@ -58,7 +62,7 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["nat.*", "langchain_core.*"]
+module = ["nat.*", "langchain.*", "langchain_core.*", "langchain_community.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

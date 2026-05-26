@@ -6,11 +6,12 @@ Companion code for the **Overseer-in-the-loop** blog series — practically impl
 
 ## What this is
 
-`git checkout post-N` lands on any post's state. At `post-02`, the runnable system is the agent loop itself:
+`git checkout post-N` lands on any post's state. At `post-03`, the runnable system is a code-first agent with a real tool suite — every action still gated by a human:
 
 - a **NeMo Agent Toolkit (NAT)** ReAct loop, embedded as a library behind a **FastAPI** WebSocket gateway — never `nat serve`
 - a **Next.js** UI that streams the agent's reasoning and tool calls in real time
-- a single demo tool (`current_datetime`), with **human-in-the-loop on every tool call** — each action pauses for explicit approval before it runs
+- a **file-system tool suite** — read, write, list, grep, glob, plus an OpenCode-inspired `edit_file` with a 9-strategy targeted-replacement algorithm — wrapped in a NAT `FunctionGroup` with workspace-root sandboxing
+- **human-in-the-loop on every tool call**: each action pauses for explicit approval before it runs — the per-tool "click-fest" that post-04's classifier automates
 
 The agent is configured entirely in Python — no YAML — and OpenTelemetry tracing is wired (optional) so reasoning steps surface in any OTLP-compatible backend.
 
@@ -57,12 +58,12 @@ Out of the box it points at **NVIDIA NIM** — grab a free key at [build.nvidia.
 mise run dev                              # hivemind starts FastAPI + Next.js together
 ```
 
-One command brings up the whole stack and streams both processes' logs in your terminal. Open `http://localhost:3000` and send a query like *"what time is it?"* — the UI streams reasoning steps in real time and prompts you to approve the tool call before it runs.
+One command brings up the whole stack and streams both processes' logs in your terminal. Open `http://localhost:3000` and send a query like *"show me what's in src/tools and read the files there"* — the UI streams reasoning steps in real time and prompts you to approve **every** tool call before it runs.
 
 | Surface | Port | Purpose |
 |---|---|---|
 | FastAPI gateway | 8000 | `/health`, `/status`, `/ws` (WebSocket agent loop) |
-| Next.js UI | 3000 | Agent loop + HITL approve/reject |
+| Next.js UI | 3000 | Agent loop + per-tool HITL approve/reject |
 
 ## Mise tasks
 

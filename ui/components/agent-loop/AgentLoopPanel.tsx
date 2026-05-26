@@ -11,19 +11,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import type { ServerMessage } from "@/lib/types";
 import { WSClient } from "@/lib/ws-client";
 
-import {
-  type AgentThought,
-  type HITLPrompt,
-  MobileTraceOverlay,
-  PrimaryChatColumn,
-  type Step,
-  TraceStepsBlock,
-} from "./agent-loop-parts";
+import { ToolPanel } from "../tool-panel/ToolPanel";
+import { MobileTraceOverlay, PrimaryChatColumn } from "./agent-loop-parts";
+import type { AgentThought, HITLPrompt, Step } from "./step-utils";
 
 type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
@@ -57,7 +51,6 @@ export function AgentLoopPanel() {
 
   const clientRef = useRef<WSClient | null>(null);
   const primaryEndRef = useRef<HTMLDivElement>(null);
-  const traceEndDesktopRef = useRef<HTMLDivElement>(null);
   const traceEndMobileRef = useRef<HTMLDivElement>(null);
 
   // Depend on `.length` not the array — every stream chunk produces a new
@@ -76,10 +69,12 @@ export function AgentLoopPanel() {
   }, [lastUserText, hitlPrompt, finalResponse, isProcessing, thoughtCount]);
 
   useEffect(() => {
-    if (steps.length === 0) return;
-    traceEndDesktopRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Skip when the mobile trace overlay isn't visible — otherwise every
+    // step update during a long agent run kicks off a smooth-scroll
+    // animation against an offscreen element, which backlogs on mobile.
+    if (!traceOpen || steps.length === 0) return;
     traceEndMobileRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [steps]);
+  }, [steps, traceOpen]);
 
   const handleMessage = useCallback((message: ServerMessage) => {
     switch (message.type) {
@@ -258,8 +253,6 @@ export function AgentLoopPanel() {
   const primaryEmpty =
     lastUserText === null && hitlPrompt === null && finalResponse === null;
 
-  const traceScrollClass = "flex-1 min-h-0 px-3 pb-3 pt-1";
-
   return (
     <Card className="flex flex-1 flex-col">
       <CardHeader className="flex flex-row items-center justify-between gap-3 pb-3">
@@ -315,18 +308,8 @@ export function AgentLoopPanel() {
 
           <Separator orientation="vertical" className="hidden md:block" />
 
-          <div className="hidden min-h-0 w-72 flex-col md:flex">
-            <div className="px-3 pt-3">
-              <h2 className="text-sm font-medium text-foreground">
-                Agent trace
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                Reasoning and tool steps
-              </p>
-            </div>
-            <ScrollArea className={traceScrollClass}>
-              <TraceStepsBlock steps={steps} endRef={traceEndDesktopRef} />
-            </ScrollArea>
+          <div className="hidden min-h-0 w-80 flex-col md:flex">
+            <ToolPanel steps={steps} />
           </div>
         </div>
 

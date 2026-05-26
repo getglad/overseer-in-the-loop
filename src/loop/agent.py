@@ -12,21 +12,28 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import structlog
 from nat.builder.function_info import FunctionInfo
 from nat.cli.register_workflow import register_function
-from nat.data_models.component_ref import FunctionRef, LLMRef
+from nat.data_models.component_ref import (
+    FunctionGroupRef,
+    FunctionRef,
+    LLMRef,
+    MiddlewareRef,
+)
 from nat.data_models.config import Config
 from nat.data_models.function import FunctionBaseConfig
 from nat.llm.openai_llm import OpenAIModelConfig
 from nat.plugins.opentelemetry.register import OtelCollectorTelemetryExporter
 from nat.runtime.loader import PluginTypes, discover_and_register_plugins
 
-from src.loop.hitl import prompt_binary_approval
+from src.loop.hitl import REJECTION_MESSAGE, prompt_binary_approval
 from src.loop.prompts import AGENT_SYSTEM_PROMPT, tool_approval_prompt
 from src.loop.react_steps import REACT_WITH_STEPS_TYPE, ReActWithStepsConfig
+from src.tools.tool_registry import GetgladToolsConfig, HITLApprovalConfig
 
 if TYPE_CHECKING:
     from nat.builder.builder import Builder
@@ -34,11 +41,11 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger()
 
-REJECTION_MESSAGE = "Tool call was rejected by the user."
-
 # Typed catalog refs — one name per site, mypy-typo-safe.
 MAIN_LLM = LLMRef("main_llm")
 CURRENT_DATETIME = FunctionRef("current_datetime")
+GETGLAD_TOOLS = FunctionGroupRef("getglad_tools")
+HITL_APPROVAL = MiddlewareRef("hitl_approval")
 
 # Env var names. Exported so test fixtures and downstream domains can
 # reference them by name instead of duplicating string literals.
@@ -79,6 +86,47 @@ def _default_otel_endpoint() -> str | None:
     return os.environ.get("OTEL_ENDPOINT") or None
 
 
+WORKSPACE_ROOT_ENV = "WORKSPACE_ROOT"
+
+# Paths that always represent "too broad" workspace roots regardless of host.
+# Includes macOS canonical forms (/private/...) because `resolve()` will
+# de-symlink them. `Path.home()` is added at call time, not module-import
+# time, so monkeypatched HOME in tests resolves correctly.
+_STATIC_BROAD_PATHS = frozenset({
+    Path("/"),
+    Path("/Users"),
+    Path("/home"),
+    Path("/etc"),
+    Path("/usr"),
+    Path("/var"),
+    Path("/tmp"),  # noqa: S108 — refusing tmp as a workspace root, not creating files in it
+    Path("/private/etc"),
+    Path("/private/var"),
+    Path("/private/tmp"),
+})
+
+
+def _default_workspace_root() -> Path:
+    """Read ``WORKSPACE_ROOT`` from env, falling back to cwd.
+
+    Refuses to start when the resolved path is suspiciously broad
+    (filesystem root, $HOME, or a system directory). The file tools are
+    bounded to this directory, so a too-broad root gives the agent reach
+    over the whole machine — a warning is too easy to miss in startup logs.
+    """
+    raw = os.environ.get(WORKSPACE_ROOT_ENV)
+    root = (Path(raw) if raw else Path.cwd()).resolve()
+    broad = _STATIC_BROAD_PATHS | {Path.home()}
+    if root in broad:
+        msg = (
+            f"WORKSPACE_ROOT resolved to {root}, which is too broad. "
+            "Set WORKSPACE_ROOT in mise.local.toml to a project-scoped "
+            "directory before starting the server."
+        )
+        raise RuntimeError(msg)
+    return root
+
+
 @dataclass(frozen=True)
 class AgentSettings:
     """Configuration for building the agent workflow.
@@ -101,6 +149,7 @@ class AgentSettings:
     max_tokens: int = 4096
     otel_endpoint: str | None = field(default_factory=_default_otel_endpoint)
     otel_project: str = "agent-auto-mode"
+    workspace_root: Path = field(default_factory=_default_workspace_root)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +268,20 @@ async def configure_builder(
 
     await builder.add_function(CURRENT_DATETIME, HITLCurrentTimeConfig())
 
-    tool_names: list[FunctionRef] = [CURRENT_DATETIME]
+    # FunctionGroup-based tools: file read/write/edit, grep, glob, list.
+    # HITL approval here is enforced via FunctionGroup middleware rather
+    # than per-tool wrapping. NAT requires the middleware to be registered
+    # by name first; constructor injection gets clobbered by the builder.
+    await builder.add_middleware(HITL_APPROVAL, HITLApprovalConfig())
+    await builder.add_function_group(
+        GETGLAD_TOOLS,
+        GetgladToolsConfig(
+            workspace_root=str(settings.workspace_root.resolve()),
+            middleware=[HITL_APPROVAL],
+        ),
+    )
+
+    tool_names: list[FunctionRef | FunctionGroupRef] = [CURRENT_DATETIME, GETGLAD_TOOLS]
 
     await configure_telemetry(
         builder,
