@@ -10,6 +10,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { AgentResponseMarkdown } from "./AgentResponseMarkdown";
 import {
   type AgentThought,
+  elapsedMs,
+  formatElapsed,
   getStepCategory,
   type HITLPrompt,
   parsePayloadFields,
@@ -52,9 +54,13 @@ function StepPayload({ payload }: { payload: string }) {
 const StepCard = memo(function StepCard({
   step,
   cardClassName,
+  cumulativeMs,
+  deltaMs,
 }: {
   step: Step;
   cardClassName: string;
+  cumulativeMs: number | null;
+  deltaMs: number | null;
 }) {
   const category = getStepCategory(step.name);
   return (
@@ -71,12 +77,31 @@ const StepCard = memo(function StepCard({
             {step.name}
           </span>
         </div>
-        <Badge
-          variant={step.status === "complete" ? "secondary" : "default"}
-          className="shrink-0 text-[10px]"
-        >
-          {step.status === "complete" ? "done" : "running"}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {cumulativeMs === null ? null : (
+            <span
+              className="font-mono text-[10px] text-muted-foreground"
+              title={
+                deltaMs === null
+                  ? "first step in this run"
+                  : `+${formatElapsed(deltaMs)} since previous step`
+              }
+            >
+              T+{formatElapsed(cumulativeMs)}
+              {deltaMs === null ? null : (
+                <span className="ml-1 text-foreground/60">
+                  · +{formatElapsed(deltaMs)}
+                </span>
+              )}
+            </span>
+          )}
+          <Badge
+            variant={step.status === "complete" ? "secondary" : "default"}
+            className="shrink-0 text-[10px]"
+          >
+            {step.status === "complete" ? "done" : "running"}
+          </Badge>
+        </div>
       </div>
       {step.payload ? <StepPayload payload={step.payload} /> : null}
     </div>
@@ -86,15 +111,31 @@ const StepCard = memo(function StepCard({
 export function StepCards({
   steps,
   cardClassName = "bg-muted/50 p-3",
+  queryStartedAt,
 }: {
   steps: Step[];
   cardClassName?: string;
+  /** ISO timestamp of when the user's query was sent. Null until first send. */
+  queryStartedAt: string | null;
 }) {
   return (
     <>
-      {steps.map((step) => (
-        <StepCard key={step.id} step={step} cardClassName={cardClassName} />
-      ))}
+      {steps.map((step, idx) => {
+        const cumulativeMs = queryStartedAt
+          ? elapsedMs(queryStartedAt, step.timestamp)
+          : null;
+        const prev = idx > 0 ? steps[idx - 1] : null;
+        const deltaMs = prev ? elapsedMs(prev.timestamp, step.timestamp) : null;
+        return (
+          <StepCard
+            key={step.id}
+            step={step}
+            cardClassName={cardClassName}
+            cumulativeMs={cumulativeMs}
+            deltaMs={deltaMs}
+          />
+        );
+      })}
     </>
   );
 }
@@ -118,9 +159,11 @@ function ProcessingIndicator() {
 export function TraceStepsBlock({
   steps,
   endRef,
+  queryStartedAt,
 }: {
   steps: Step[];
   endRef: RefObject<HTMLDivElement | null>;
+  queryStartedAt: string | null;
 }) {
   return (
     <div className="flex flex-col gap-3 pr-1">
@@ -129,7 +172,7 @@ export function TraceStepsBlock({
           No steps yet.
         </p>
       ) : (
-        <StepCards steps={steps} />
+        <StepCards steps={steps} queryStartedAt={queryStartedAt} />
       )}
       <div ref={endRef} />
     </div>
@@ -192,7 +235,7 @@ export function PrimaryChatColumn({
 
           {hitlPrompt ? (
             <div className="rounded-md border-2 border-primary bg-primary/5 p-4">
-              <p className="mb-3 text-sm font-medium text-foreground">
+              <p className="mb-3 whitespace-pre-wrap text-sm font-medium text-foreground">
                 {hitlPrompt.text}
               </p>
               <div className="flex gap-2">
@@ -226,10 +269,12 @@ export function MobileTraceOverlay({
   steps,
   traceEndRef,
   onClose,
+  queryStartedAt,
 }: {
   steps: Step[];
   traceEndRef: RefObject<HTMLDivElement | null>;
   onClose: () => void;
+  queryStartedAt: string | null;
 }) {
   return (
     <>
@@ -262,7 +307,11 @@ export function MobileTraceOverlay({
           </Button>
         </div>
         <ScrollArea className="min-h-0 flex-1 p-3">
-          <TraceStepsBlock steps={steps} endRef={traceEndRef} />
+          <TraceStepsBlock
+            steps={steps}
+            endRef={traceEndRef}
+            queryStartedAt={queryStartedAt}
+          />
         </ScrollArea>
       </div>
     </>

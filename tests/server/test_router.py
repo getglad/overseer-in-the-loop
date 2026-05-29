@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+import contextlib
+from collections import deque
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import WebSocketDisconnect
 
+from src.core.conversation import MAX_PROMPT_HISTORY
 from src.loop.hitl import APPROVE_OPTION
-from src.server.router import APPROVE_LITERAL, _ws_authorized
+from src.server.router import APPROVE_LITERAL, _start_agent_run, _ws_authorized
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -114,3 +120,99 @@ class TestWebSocketHandshakeAndFraming:
             ws.send_text("this is not json{")
             reply = ws.receive_json()
             assert reply["type"] == "error_message"
+
+
+def _user_message(text: str) -> dict[str, Any]:
+    """Build a minimal user_message envelope that ``extract_query`` accepts."""
+    return {"content": {"messages": [{"content": [{"type": "text", "text": text}]}]}}
+
+
+class _StubWS:
+    """WebSocket stand-in for ``_start_agent_run``: app.state + async send_json."""
+
+    def __init__(self) -> None:
+        self.app = SimpleNamespace(state=SimpleNamespace(session_manager=object()))
+        self.send_json = AsyncMock()
+
+
+class TestConversationWindowPlumbing:
+    """The router's per-connection prompt window feeds the guardrail classifier.
+
+    This is the riskiest new orchestration in the change: the snapshot-prior-
+    THEN-append ordering is what keeps the current request out of its own prior
+    context, and the per-connection deque is what keeps one conversation's turns
+    out of another's guard decisions. A reorder/scope regression here would pass
+    the rest of the suite, so it gets a direct test.
+    """
+
+    @staticmethod
+    def _capture_runs(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, tuple[str, ...]]]:
+        """Stub run_agent to record (query, prior_user_prompts); neutralize the evil toggle."""
+        captured: list[tuple[str, tuple[str, ...]]] = []
+
+        async def _stub_run_agent(
+            _send: Any, query: str, _bridge: Any, _sm: Any, *, prior_user_prompts: Any = (),
+        ) -> None:
+            captured.append((query, tuple(prior_user_prompts)))
+
+        monkeypatch.setattr("src.loop.service.run_agent", _stub_run_agent)
+        monkeypatch.setattr("src.guardrails.middleware.set_evil_toggle", lambda **_: None)
+        return captured
+
+    @staticmethod
+    async def _run_turn(
+        ws: _StubWS, history: deque[str], text: str, prior_task: asyncio.Task[None] | None = None,
+    ) -> asyncio.Task[None] | None:
+        """Drive one user_message through the real _start_agent_run and let it complete."""
+        task = await _start_agent_run(ws, _user_message(text), MagicMock(), prior_task, history)  # type: ignore[arg-type]
+        if task is not None:
+            await task
+        return task
+
+    async def test_prior_window_excludes_the_current_turn(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Turn N's prior window is the EARLIER turns — never the current request itself."""
+        captured = self._capture_runs(monkeypatch)
+        ws, history = _StubWS(), deque(maxlen=MAX_PROMPT_HISTORY)
+        for text in ("read config", "deploy it", "check status"):
+            await self._run_turn(ws, history, text)
+        assert [prior for _q, prior in captured] == [
+            (),
+            ("read config",),
+            ("read config", "deploy it"),
+        ]
+
+    async def test_window_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The prior window never exceeds MAX_PROMPT_HISTORY (oldest turns drop)."""
+        captured = self._capture_runs(monkeypatch)
+        ws, history = _StubWS(), deque(maxlen=MAX_PROMPT_HISTORY)
+        for i in range(MAX_PROMPT_HISTORY + 3):
+            await self._run_turn(ws, history, f"turn{i}")
+        assert all(len(prior) <= MAX_PROMPT_HISTORY for _q, prior in captured)
+        assert len(captured[-1][1]) == MAX_PROMPT_HISTORY
+
+    async def test_each_connection_starts_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A second connection's deque is independent — no cross-connection history bleed."""
+        captured = self._capture_runs(monkeypatch)
+        ws = _StubWS()
+        await self._run_turn(ws, deque(maxlen=MAX_PROMPT_HISTORY), "conn-1 turn")
+        await self._run_turn(ws, deque(maxlen=MAX_PROMPT_HISTORY), "conn-2 turn")
+        assert captured[1] == ("conn-2 turn", ())
+
+    async def test_superseded_turn_stays_in_history(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A turn whose run is superseded still appears as prior context next turn."""
+        captured = self._capture_runs(monkeypatch)
+        ws, history = _StubWS(), deque(maxlen=MAX_PROMPT_HISTORY)
+        hanging: asyncio.Task[None] = asyncio.create_task(asyncio.Event().wait())  # type: ignore[arg-type]
+        try:
+            await self._run_turn(ws, history, "first request")
+            await self._run_turn(ws, history, "second request", prior_task=hanging)
+        finally:
+            hanging.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hanging
+        assert captured[1] == ("second request", ("first request",))
+        assert hanging.cancelled()

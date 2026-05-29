@@ -4,14 +4,15 @@ All tools operate on the server's file system within a workspace root.
 Tools are registered via @register_function_group so NAT's builder resolves
 them by group name ("getglad_tools").
 
-HITL approval is applied as FunctionGroup middleware — a single middleware
-instance gates all tools in the group, eliminating per-tool approval boilerplate.
+The classifier middleware (see src/guardrails/middleware.py) wraps every
+tool in the group: rules-fast-path allow for read-only tools, LLM judgment
+for ambiguous cases, HITL fallback when the classifier escalates.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import structlog
 from langchain.agents.middleware.file_search import FilesystemFileSearchMiddleware
@@ -21,21 +22,16 @@ from langchain_community.tools.file_management import (
     WriteFileTool,
 )
 from nat.builder.function import FunctionGroup
-from nat.cli.register_workflow import register_function_group, register_middleware
+from nat.cli.register_workflow import register_function_group
 from nat.data_models.function import FunctionGroupBaseConfig
-from nat.data_models.middleware import FunctionMiddlewareBaseConfig
-from nat.middleware.function_middleware import FunctionMiddleware
 from pydantic import Field
 
-from src.loop.hitl import REJECTION_MESSAGE, prompt_binary_approval
-from src.loop.prompts import tool_approval_prompt
 from src.tools.edit import EditError, edit_file
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from nat.builder.builder import Builder
-    from nat.middleware.middleware import CallNext, FunctionMiddlewareContext
 
 logger = structlog.get_logger()
 
@@ -48,74 +44,6 @@ _TRUTHY = frozenset({"true", "1", "yes", "y", "on"})
 def _is_truthy(value: str) -> bool:
     """Coerce an LLM-supplied string flag to bool without silent data loss."""
     return value.strip().lower() in _TRUTHY
-
-
-# FunctionMiddlewareBaseConfig uses metaclass __init_subclass__ kwargs
-class HITLApprovalConfig(FunctionMiddlewareBaseConfig, name="hitl_approval"):  # type: ignore[call-arg,misc]
-    """Configuration for the HITL approval middleware."""
-
-    enabled: bool = True
-
-
-class HITLApprovalMiddleware(FunctionMiddleware):  # type: ignore[misc]
-    """FunctionGroup middleware that gates every tool call behind HITL approval.
-
-    Overrides function_middleware_invoke to short-circuit on rejection —
-    the tool function never executes if the user says no. NAT's framework
-    skips this middleware entirely when ``enabled`` is False.
-    """
-
-    def __init__(self, config: HITLApprovalConfig) -> None:
-        """Store the config so ``enabled`` and ``invoke`` can read it."""
-        super().__init__()
-        self._config = config
-
-    @property
-    def enabled(self) -> bool:
-        """Whether the middleware should run; framework checks before invoke."""
-        return self._config.enabled
-
-    async def function_middleware_invoke(
-        self,
-        *args: Any,
-        call_next: CallNext,
-        context: FunctionMiddlewareContext,
-        **kwargs: Any,
-    ) -> Any:
-        """Prompt for approval, short-circuit if rejected."""
-        _, fn_name = FunctionGroup.decompose(context.name)
-        # Prefer the description registered with `group.add_function`; fall
-        # back to the bare tool name. We intentionally don't reflect LLM-
-        # supplied args into the prompt — those values can contain
-        # whitespace or content-spoofing characters that would mislead the
-        # user about what they're approving.
-        desc = context.description or fn_name
-
-        if not await self._prompt_approval(fn_name, desc):
-            return REJECTION_MESSAGE
-
-        return await call_next(*args, **kwargs)
-
-    @staticmethod
-    async def _prompt_approval(tool_name: str, description: str) -> bool:
-        """Prompt the user via shared HITL primitive."""
-        return await prompt_binary_approval(
-            tool_approval_prompt(tool_name, description),
-        )
-
-
-@register_middleware(config_type=HITLApprovalConfig)  # type: ignore[untyped-decorator]
-async def hitl_approval_middleware(
-    config: HITLApprovalConfig,
-    _builder: Builder,
-) -> AsyncIterator[HITLApprovalMiddleware]:
-    """Build the HITL approval middleware instance."""
-    if not config.enabled:
-        logger.warning(
-            "hitl_approval_disabled",
-            reason="HITL approval middleware disabled — tools run without prompting",
-        )
-    yield HITLApprovalMiddleware(config)
 
 
 # FunctionGroupBaseConfig uses metaclass __init_subclass__ kwargs
@@ -259,10 +187,10 @@ async def getglad_tools(
     """Build the system access tool group.
 
     Creates file management, search, and edit tools scoped to the
-    configured workspace root. HITL approval is applied as group-level
-    middleware — all tools share the same approval gate.
+    configured workspace root. Approval is handled by the classifier
+    middleware registered separately and referenced by name via
+    `config.middleware`.
     """
-    # Middleware is resolved by the builder from config.middleware (name-based)
     group = FunctionGroup(config=config)
 
     _add_file_tools(group, config.workspace_root)

@@ -34,6 +34,12 @@ export interface UserMessage {
       role: "user";
       content: Array<{ type: "text"; text: string }>;
     }>;
+    /**
+     * Evil toggle: when true, the server swaps real tool args with a
+     * hardcoded exfiltration payload for classification only. Demo
+     * affordance for guardrail testing.
+     */
+    evil_toggle?: boolean;
   };
   timestamp?: string;
 }

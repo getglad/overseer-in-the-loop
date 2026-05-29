@@ -7,11 +7,13 @@ import json
 import os
 import re
 import uuid
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 import structlog
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
+from src.core.conversation import MAX_PROMPT_HISTORY
 from src.core.protocol import MessageType, extract_query, ws_msg
 from src.server.hitl_bridge import WebSocketHITLBridge
 
@@ -113,6 +115,7 @@ async def _start_agent_run(
     data: dict[str, Any],
     bridge: WebSocketHITLBridge,
     prior_task: asyncio.Task[None] | None,
+    prompt_history: deque[str],
 ) -> asyncio.Task[None] | None:
     """Validate a user_message and spawn the agent run. Returns the new task (or prior on error)."""
     query = extract_query(data)
@@ -137,9 +140,27 @@ async def _start_agent_run(
         bridge.cancel_all()
 
     # Deferred so router import doesn't cascade into NAT — see APPROVE_LITERAL.
+    from src.guardrails.middleware import set_evil_toggle
     from src.loop.service import run_agent
 
-    return asyncio.create_task(run_agent(websocket.send_json, query, bridge, sm))
+    # Evil toggle: opt-in demo flag. When true, the classifier middleware
+    # swaps real tool args with a hardcoded exfiltration payload for the
+    # classification call only (the tool still runs with the real args).
+    # Strict identity check (`is True`) — a stray truthy value ("yes", a
+    # non-empty list) from a crafted message shouldn't flip the flag.
+    content = data.get("content")
+    evil = isinstance(content, dict) and content.get("evil_toggle") is True
+    set_evil_toggle(enabled=evil)
+
+    # Snapshot the prior user turns BEFORE recording this one, so the classifier
+    # sees the lead-up — not the current request twice. The deque is per-connection
+    # (bounded), so concurrent conversations never share history.
+    prior_user_prompts = tuple(prompt_history)
+    prompt_history.append(query)
+
+    return asyncio.create_task(
+        run_agent(websocket.send_json, query, bridge, sm, prior_user_prompts=prior_user_prompts),
+    )
 
 
 async def _accept_ws(websocket: WebSocket) -> bool:
@@ -162,11 +183,12 @@ async def _handle_client_message(
     data: dict[str, Any],
     bridge: WebSocketHITLBridge,
     agent_task: asyncio.Task[None] | None,
+    prompt_history: deque[str],
 ) -> asyncio.Task[None] | None:
     """Dispatch one validated client message; returns the (maybe updated) agent task."""
     msg_type = data.get("type")
     if msg_type == MessageType.USER_MESSAGE:
-        return await _start_agent_run(websocket, data, bridge, agent_task)
+        return await _start_agent_run(websocket, data, bridge, agent_task, prompt_history)
     if msg_type == MessageType.USER_INTERACTION:
         parent_id = data.get("parent_id", "")
         response_text = extract_query(data) or ""
@@ -192,6 +214,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     session_id = str(uuid.uuid4())
     bridge = WebSocketHITLBridge()
     agent_task: asyncio.Task[None] | None = None
+    # Rolling window of this connection's USER prompts — fed to the guardrail
+    # classifier so it judges each action against the conversation's goal.
+    prompt_history: deque[str] = deque(maxlen=MAX_PROMPT_HISTORY)
 
     logger.info("ws_connected", session_id=session_id)
 
@@ -211,7 +236,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     ws_msg(MessageType.ERROR, "Message must be a JSON object."),
                 )
                 continue
-            agent_task = await _handle_client_message(websocket, data, bridge, agent_task)
+            agent_task = await _handle_client_message(
+                websocket, data, bridge, agent_task, prompt_history,
+            )
 
     except WebSocketDisconnect:
         logger.info("ws_disconnected", session_id=session_id)

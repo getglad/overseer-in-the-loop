@@ -8,9 +8,11 @@ import type { Step } from "../agent-loop/step-utils";
 
 interface ToolPanelProps {
   steps: Step[];
+  /** ISO timestamp when the current query was sent; null before first send. */
+  queryStartedAt: string | null;
 }
 
-export function ToolPanel({ steps }: ToolPanelProps) {
+export function ToolPanel({ steps, queryStartedAt }: ToolPanelProps) {
   if (steps.length === 0) {
     return (
       <div className="flex flex-col gap-2 p-3">
@@ -34,7 +36,11 @@ export function ToolPanel({ steps }: ToolPanelProps) {
       </div>
       <ScrollArea className="flex-1 min-h-0 px-3 pb-3">
         <div className="flex flex-col gap-2">
-          <StepCards steps={steps} cardClassName="bg-card p-2.5" />
+          <StepCards
+            steps={steps}
+            cardClassName="bg-card p-2.5"
+            queryStartedAt={queryStartedAt}
+          />
         </div>
       </ScrollArea>
     </div>

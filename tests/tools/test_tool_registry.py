@@ -1,20 +1,19 @@
-"""Tests for the tool registry — FunctionGroup registration, scoping, HITL."""
+"""Tests for the tool registry — FunctionGroup registration, scoping, classifier wiring."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from nat.builder.framework_enum import LLMFrameworkEnum
 from nat.builder.workflow_builder import WorkflowBuilder
 
-from src.tools.tool_registry import (
-    GetgladToolsConfig,
-    HITLApprovalConfig,
-    HITLApprovalMiddleware,
-)
+from src.guardrails.classifier import ClassifyResult
+from src.guardrails.middleware import ClassifierConfig, set_evil_toggle
+from src.tools.tool_registry import GetgladToolsConfig
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from pathlib import Path
 
 GROUP_NAME = "getglad_tools"
@@ -30,15 +29,35 @@ EXPECTED_TOOLS = {
 
 
 async def _setup_builder(builder: WorkflowBuilder, tmp_path: Path) -> None:
-    """Register middleware + function group on builder. Shared by all tests."""
-    await builder.add_middleware("hitl_approval", HITLApprovalConfig())
+    """Register classifier middleware + function group on builder. Shared by all tests."""
+    await builder.add_middleware("classifier", ClassifierConfig())
     await builder.add_function_group(
         GROUP_NAME,
         GetgladToolsConfig(
             workspace_root=str(tmp_path),
-            middleware=["hitl_approval"],
+            middleware=["classifier"],
         ),
     )
+
+
+@pytest.fixture
+def _auto_classify(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bypass classifier so non-fast-path tools execute without HITL."""
+
+    async def _always_allow(*_args: Any, **_kwargs: Any) -> ClassifyResult:
+        return ClassifyResult(
+            allowed=True, layer="guardrail-agent", reason="test fixture",
+        )
+
+    monkeypatch.setattr("src.guardrails.middleware.classify", _always_allow)
+
+
+@pytest.fixture
+def _evil_on() -> Generator[None]:
+    """Enable evil toggle for one test; always reset on teardown."""
+    set_evil_toggle(enabled=True)
+    yield
+    set_evil_toggle(enabled=False)
 
 
 class TestToolRegistration:
@@ -72,119 +91,25 @@ class TestToolRegistration:
             assert resolved_names >= EXPECTED_TOOLS
 
 
-@pytest.fixture
-def _auto_approve(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Bypass HITL approval middleware so tools execute in tests."""
+class TestClassifierFires:
+    """Verify the classifier middleware actually intercepts tool calls."""
 
-    async def _always_approve(_tool_name: str, _description: str) -> bool:
-        return True
-
-    monkeypatch.setattr(
-        HITLApprovalMiddleware,
-        "_prompt_approval",
-        staticmethod(_always_approve),
-    )
-
-
-class TestMiddlewareFires:
-    """Verify that HITL middleware actually intercepts tool calls."""
-
-    async def test_middleware_called_on_tool_invoke(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+    async def test_always_allow_tool_skips_classify(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """WHEN a tool is invoked THEN the HITL middleware fires."""
+        """A read-only tool (ALWAYS_ALLOW) executes without ever calling classify()."""
         call_log: list[str] = []
 
-        async def _tracking_approve(_tool_name: str, _description: str) -> bool:
-            call_log.append(_tool_name)
-            return True
-
-        monkeypatch.setattr(
-            HITLApprovalMiddleware,
-            "_prompt_approval",
-            staticmethod(_tracking_approve),
-        )
-
-        async with WorkflowBuilder() as builder:
-            await _setup_builder(builder, tmp_path)
-            tools = await builder.get_tools(
-                [GROUP_NAME],
-                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
-            )
-            list_tool = next(
-                t for t in tools if t.name == f"{GROUP_NAME}__list_directory"
-            )
-            await list_tool.ainvoke({"dir_path": "."})
-
-        assert "list_directory" in call_log, (
-            "HITL middleware did not fire — approval was not called"
-        )
-
-    async def test_middleware_blocks_on_rejection(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """WHEN the user rejects THEN the tool returns rejection message."""
-
-        async def _always_reject(_tool_name: str, _description: str) -> bool:
-            return False
-
-        monkeypatch.setattr(
-            HITLApprovalMiddleware,
-            "_prompt_approval",
-            staticmethod(_always_reject),
-        )
-
-        async with WorkflowBuilder() as builder:
-            await _setup_builder(builder, tmp_path)
-            tools = await builder.get_tools(
-                [GROUP_NAME],
-                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
-            )
-            list_tool = next(
-                t for t in tools if t.name == f"{GROUP_NAME}__list_directory"
-            )
-            result = await list_tool.ainvoke({"dir_path": "."})
-
-        assert "rejected" in str(result).lower()
-
-    async def test_disabled_middleware_skips_approval(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """WHEN HITLApprovalConfig.enabled is False THEN approval is not requested.
-
-        NAT's framework checks ``Middleware.enabled`` before invoking it. We
-        expose this through ``HITLApprovalConfig.enabled`` so blog readers
-        can run unattended demos by flipping a config flag.
-        """
-        call_log: list[str] = []
-
-        async def _track(tool_name: str, _description: str) -> bool:
+        async def _track_classify(
+            _rails: object, tool_name: str, _args: dict[str, Any], **_kwargs: Any,
+        ) -> ClassifyResult:
             call_log.append(tool_name)
-            return True
+            return ClassifyResult(allowed=True, layer="guardrail-agent", reason="test")
 
-        monkeypatch.setattr(
-            HITLApprovalMiddleware,
-            "_prompt_approval",
-            staticmethod(_track),
-        )
+        monkeypatch.setattr("src.guardrails.middleware.classify", _track_classify)
 
         async with WorkflowBuilder() as builder:
-            await builder.add_middleware(
-                "hitl_approval", HITLApprovalConfig(enabled=False),
-            )
-            await builder.add_function_group(
-                GROUP_NAME,
-                GetgladToolsConfig(
-                    workspace_root=str(tmp_path),
-                    middleware=["hitl_approval"],
-                ),
-            )
+            await _setup_builder(builder, tmp_path)
             tools = await builder.get_tools(
                 [GROUP_NAME],
                 wrapper_type=LLMFrameworkEnum.LANGCHAIN,
@@ -195,11 +120,212 @@ class TestMiddlewareFires:
             await list_tool.ainvoke({"dir_path": "."})
 
         assert call_log == [], (
-            f"Expected no approval prompts when enabled=False, got {call_log}"
+            f"list_directory is in ALWAYS_ALLOW but classify() was called: {call_log}"
+        )
+
+    @pytest.mark.usefixtures("_evil_on")
+    async def test_evil_toggle_bypasses_fast_path_for_always_allow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """WHEN evil toggle is on THEN classify() is called with skip_rules=True.
+
+        Without this, the most natural reader prompts (``list files``,
+        ``read README``) either short-circuit on the middleware fast-path
+        OR get short-circuited by classify()'s own rules check — the evil
+        payload never reaches the guardrail agent. The demo's whole point
+        is to make the LLM-tier block visible, so the toggle must bypass
+        BOTH fast-paths and force LLM evaluation.
+        """
+        call_log: list[tuple[str, bool]] = []
+
+        async def _track_classify(
+            _rails: object,
+            tool_name: str,
+            _args: dict[str, Any],
+            *,
+            skip_rules: bool = False,
+            **_kwargs: Any,
+        ) -> ClassifyResult:
+            call_log.append((tool_name, skip_rules))
+            return ClassifyResult(
+                allowed=False, layer="guardrail-agent",
+                reason="test: evil toggle should reach the LLM tier",
+            )
+
+        async def _approve(_text: str) -> bool:
+            return True  # accept the HITL override so the tool still runs
+
+        monkeypatch.setattr("src.guardrails.middleware.classify", _track_classify)
+        monkeypatch.setattr(
+            "src.guardrails.middleware.prompt_binary_approval", _approve,
+        )
+
+        async with WorkflowBuilder() as builder:
+            await _setup_builder(builder, tmp_path)
+            tools = await builder.get_tools(
+                [GROUP_NAME],
+                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
+            )
+            list_tool = next(
+                t for t in tools if t.name == f"{GROUP_NAME}__list_directory"
+            )
+            await list_tool.ainvoke({"dir_path": "."})
+
+        assert call_log == [("list_directory", True)], (
+            f"Evil toggle on but classify() did not receive skip_rules=True "
+            f"— fast-path leaked: {call_log}"
+        )
+
+    async def test_write_tool_consults_classifier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A write tool — outside the fast-path — invokes classify() once."""
+        call_log: list[str] = []
+
+        async def _track_classify(
+            _rails: object, tool_name: str, _args: dict[str, Any], **_kwargs: Any,
+        ) -> ClassifyResult:
+            call_log.append(tool_name)
+            return ClassifyResult(allowed=True, layer="guardrail-agent", reason="test")
+
+        monkeypatch.setattr("src.guardrails.middleware.classify", _track_classify)
+
+        async with WorkflowBuilder() as builder:
+            await _setup_builder(builder, tmp_path)
+            tools = await builder.get_tools(
+                [GROUP_NAME],
+                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
+            )
+            write_tool = next(
+                t for t in tools if t.name == f"{GROUP_NAME}__write_file"
+            )
+            await write_tool.ainvoke({
+                "file_path": "out.txt",
+                "text": "hello",
+            })
+
+        assert call_log == ["write_file"], (
+            f"Expected classifier consulted for write_file, got {call_log}"
+        )
+
+    async def test_write_tool_args_flow_through_to_classifier(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Multi-arg tool: write_file's args reach classify() via BaseModel.model_dump().
+
+        End-to-end check that NAT's InputArgsSchema unwrapping works in
+        the live middleware path. ``_extract_tool_args`` is also covered
+        directly in test_middleware_args_extraction below for the
+        single-arg case (which the fast-path would otherwise hide).
+        """
+        captured: list[dict[str, Any]] = []
+
+        async def _capture_args(
+            _rails: object, _name: str, args: dict[str, Any], **_kwargs: Any,
+        ) -> ClassifyResult:
+            captured.append(args)
+            return ClassifyResult(allowed=True, layer="guardrail-agent", reason="test")
+
+        monkeypatch.setattr("src.guardrails.middleware.classify", _capture_args)
+
+        async with WorkflowBuilder() as builder:
+            await _setup_builder(builder, tmp_path)
+            tools = await builder.get_tools(
+                [GROUP_NAME],
+                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
+            )
+            write_tool = next(
+                t for t in tools if t.name == f"{GROUP_NAME}__write_file"
+            )
+            await write_tool.ainvoke({"file_path": "out.txt", "text": "hello"})
+
+        assert len(captured) == 1
+        assert set(captured[0].keys()) >= {"file_path", "text"}, captured[0]
+
+    async def test_blocked_classifier_with_hitl_rejection_returns_rejection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When classifier blocks AND HITL rejects, the tool returns REJECTION_MESSAGE."""
+
+        async def _always_block(
+            _rails: object, _tool_name: str, _args: dict[str, Any], **_kwargs: Any,
+        ) -> ClassifyResult:
+            return ClassifyResult(
+                allowed=False, layer="guardrail-agent",
+                reason="too risky for test",
+            )
+
+        async def _always_reject(_prompt_text: str) -> bool:
+            return False
+
+        monkeypatch.setattr("src.guardrails.middleware.classify", _always_block)
+        monkeypatch.setattr(
+            "src.guardrails.middleware.prompt_binary_approval", _always_reject,
+        )
+
+        async with WorkflowBuilder() as builder:
+            await _setup_builder(builder, tmp_path)
+            tools = await builder.get_tools(
+                [GROUP_NAME],
+                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
+            )
+            write_tool = next(
+                t for t in tools if t.name == f"{GROUP_NAME}__write_file"
+            )
+            result = await write_tool.ainvoke({
+                "file_path": "out.txt",
+                "text": "hello",
+            })
+
+        assert "rejected" in str(result).lower(), (
+            f"Expected REJECTION_MESSAGE on block+reject, got: {result}"
+        )
+
+    async def test_blocked_classifier_with_hitl_override_runs_tool(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When classifier blocks but HITL overrides, the tool still executes."""
+
+        async def _always_block(
+            _rails: object, _tool_name: str, _args: dict[str, Any], **_kwargs: Any,
+        ) -> ClassifyResult:
+            return ClassifyResult(
+                allowed=False, layer="guardrail-agent",
+                reason="too risky for test",
+            )
+
+        async def _always_approve(_prompt_text: str) -> bool:
+            return True
+
+        monkeypatch.setattr("src.guardrails.middleware.classify", _always_block)
+        monkeypatch.setattr(
+            "src.guardrails.middleware.prompt_binary_approval", _always_approve,
+        )
+
+        async with WorkflowBuilder() as builder:
+            await _setup_builder(builder, tmp_path)
+            tools = await builder.get_tools(
+                [GROUP_NAME],
+                wrapper_type=LLMFrameworkEnum.LANGCHAIN,
+            )
+            write_tool = next(
+                t for t in tools if t.name == f"{GROUP_NAME}__write_file"
+            )
+            result = await write_tool.ainvoke({
+                "file_path": "out.txt",
+                "text": "hello",
+            })
+
+        # LangChain's WriteFileTool returns "File written successfully..."
+        # on success — the key invariant is no rejection message.
+        assert "rejected" not in str(result).lower(), (
+            f"Override should have allowed the write; got rejection: {result}"
         )
 
 
-@pytest.mark.usefixtures("_auto_approve")
+@pytest.mark.usefixtures("_auto_classify")
 class TestEditToolWorkspaceScoping:
     """Tests that the edit tool rejects paths outside the workspace."""
 
@@ -244,7 +370,7 @@ class TestEditToolWorkspaceScoping:
             assert f.read_text() == "goodbye world"
 
 
-@pytest.mark.usefixtures("_auto_approve")
+@pytest.mark.usefixtures("_auto_classify")
 class TestLangChainToolContainment:
     """Pin LangChain's path-containment behavior for read/write/list tools.
 

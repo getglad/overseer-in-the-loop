@@ -3,7 +3,7 @@
 Builds a NAT ReAct agent with:
 - LLM setup against any OpenAI-compatible provider (configured via env)
 - Function/tool registration
-- HITL approval on every tool call
+- Classifier middleware (rules + guardrail agent + HITL fallback)
 - OTel tracing (optional)
 """
 
@@ -30,10 +30,11 @@ from nat.llm.openai_llm import OpenAIModelConfig
 from nat.plugins.opentelemetry.register import OtelCollectorTelemetryExporter
 from nat.runtime.loader import PluginTypes, discover_and_register_plugins
 
+from src.guardrails.middleware import ClassifierConfig
 from src.loop.hitl import REJECTION_MESSAGE, prompt_binary_approval
 from src.loop.prompts import AGENT_SYSTEM_PROMPT, tool_approval_prompt
 from src.loop.react_steps import REACT_WITH_STEPS_TYPE, ReActWithStepsConfig
-from src.tools.tool_registry import GetgladToolsConfig, HITLApprovalConfig
+from src.tools.tool_registry import GetgladToolsConfig
 
 if TYPE_CHECKING:
     from nat.builder.builder import Builder
@@ -45,7 +46,7 @@ logger = structlog.get_logger()
 MAIN_LLM = LLMRef("main_llm")
 CURRENT_DATETIME = FunctionRef("current_datetime")
 GETGLAD_TOOLS = FunctionGroupRef("getglad_tools")
-HITL_APPROVAL = MiddlewareRef("hitl_approval")
+CLASSIFIER = MiddlewareRef("classifier")
 
 # Env var names. Exported so test fixtures and downstream domains can
 # reference them by name instead of duplicating string literals.
@@ -269,15 +270,16 @@ async def configure_builder(
     await builder.add_function(CURRENT_DATETIME, HITLCurrentTimeConfig())
 
     # FunctionGroup-based tools: file read/write/edit, grep, glob, list.
-    # HITL approval here is enforced via FunctionGroup middleware rather
-    # than per-tool wrapping. NAT requires the middleware to be registered
-    # by name first; constructor injection gets clobbered by the builder.
-    await builder.add_middleware(HITL_APPROVAL, HITLApprovalConfig())
+    # The classifier middleware (rules fast-path + LLM judgment + HITL
+    # fallback) wraps every tool in the group. NAT requires the middleware
+    # to be registered by name first; constructor injection gets clobbered
+    # by the builder.
+    await builder.add_middleware(CLASSIFIER, ClassifierConfig())
     await builder.add_function_group(
         GETGLAD_TOOLS,
         GetgladToolsConfig(
             workspace_root=str(settings.workspace_root.resolve()),
-            middleware=[HITL_APPROVAL],
+            middleware=[CLASSIFIER],
         ),
     )
 

@@ -54,6 +54,14 @@ const FN: StepCategory = {
   label: "fn",
   color: "bg-slate-500/10 text-slate-500",
 };
+const GUARDRAIL_ALLOW: StepCategory = {
+  label: "allowed",
+  color: "bg-green-500/10 text-green-500",
+};
+const GUARDRAIL_BLOCK: StepCategory = {
+  label: "blocked",
+  color: "bg-red-500/10 text-red-500",
+};
 
 const STEP_CATEGORIES: Record<string, StepCategory> = {
   read_file: { label: "read", color: "bg-blue-500/10 text-blue-500" },
@@ -70,6 +78,10 @@ const STEP_CATEGORIES: Record<string, StepCategory> = {
   LLM_END: LLM,
   FUNCTION_START: FN,
   FUNCTION_END: FN,
+  "rules:allow": GUARDRAIL_ALLOW,
+  "rules:block": GUARDRAIL_BLOCK,
+  "guardrail-agent:allow": GUARDRAIL_ALLOW,
+  "guardrail-agent:block": GUARDRAIL_BLOCK,
 };
 
 const DEFAULT_CATEGORY: StepCategory = {
@@ -97,6 +109,17 @@ export function getStepCategory(name: string): StepCategory {
     }
   }
   return DEFAULT_CATEGORY;
+}
+
+/** Format a millisecond duration as "234ms" or "1.23s". */
+export function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+/** Milliseconds between two ISO timestamps (always non-negative). */
+export function elapsedMs(fromIso: string, toIso: string): number {
+  return Math.max(0, new Date(toIso).getTime() - new Date(fromIso).getTime());
 }
 
 export interface PayloadField {

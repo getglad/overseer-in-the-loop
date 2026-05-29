@@ -17,6 +17,7 @@ nat = [
     "nvidia-nat>=1.7.0",
     "nvidia-nat-langchain>=1.7.0",
     "nvidia-nat-opentelemetry>=1.7.0",
+    "nemoguardrails>=0.21.0",
 ]
 
 [dependency-groups]
@@ -52,6 +53,10 @@ known-first-party = ["src", "tests"]
     "ANN401",   # Any in wrapper args — wrapping arbitrary LangChain tools
     "ASYNC240", # pathlib in async — workspace validation is CPU-bound, not I/O
 ]
+"src/guardrails/middleware.py" = [
+    "ANN401",  # Any in middleware wrapper — wrapping arbitrary tool calls
+    "PLC0415", # deferred build_rails import — defers heavy NeMo init
+]
 "src/server/app.py" = ["PLC0415"]      # deferred imports inside lifespan
 "src/server/router.py" = ["PLC0415"]   # deferred run_agent import inside handler
 
@@ -62,7 +67,13 @@ warn_return_any = true
 warn_unused_configs = true
 
 [[tool.mypy.overrides]]
-module = ["nat.*", "langchain.*", "langchain_core.*", "langchain_community.*"]
+module = [
+    "nat.*",
+    "langchain.*",
+    "langchain_core.*",
+    "langchain_community.*",
+    "nemoguardrails.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

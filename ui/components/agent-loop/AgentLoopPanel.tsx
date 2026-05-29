@@ -47,7 +47,10 @@ export function AgentLoopPanel() {
   const [lastUserText, setLastUserText] = useState<string | null>(null);
   const [traceOpen, setTraceOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [evilToggle, setEvilToggle] = useState(false);
   const [agentThoughts, setAgentThoughts] = useState<AgentThought[]>([]);
+  /** Wall-clock reference for "T+X.XXs" badges in the trace. */
+  const [queryStartedAt, setQueryStartedAt] = useState<string | null>(null);
 
   const clientRef = useRef<WSClient | null>(null);
   const primaryEndRef = useRef<HTMLDivElement>(null);
@@ -80,10 +83,10 @@ export function AgentLoopPanel() {
     switch (message.type) {
       case "system_intermediate_message": {
         // Route agent reasoning to the chat column, not the trace panel —
-        // the trace stays focused on tool calls and downstream domain
-        // events. Merge by message id: every stream chunk for one LLM call
-        // shares the same id, so partial updates accumulate into ONE
-        // growing bubble instead of N bubbles per LLM call.
+        // the trace stays focused on tool calls and guardrail decisions.
+        // Merge by message id: every stream chunk for one LLM call shares
+        // the same id, so partial updates accumulate into ONE growing
+        // bubble instead of N bubbles per LLM call.
         if (message.content.name === "agent:thinking") {
           // Payload is a DELTA (new text since the last chunk) — append it to
           // the bubble with this id, or start a new bubble. Pure updater, so
@@ -217,12 +220,14 @@ export function AgentLoopPanel() {
     setHitlPrompt(null);
     setAgentThoughts([]);
     setLastUserText(text);
+    setQueryStartedAt(new Date().toISOString());
 
     clientRef.current.send({
       type: "user_message",
       id: crypto.randomUUID(),
       content: {
         messages: [{ role: "user", content: [{ type: "text", text }] }],
+        evil_toggle: evilToggle,
       },
     });
     setQuery("");
@@ -309,7 +314,7 @@ export function AgentLoopPanel() {
           <Separator orientation="vertical" className="hidden md:block" />
 
           <div className="hidden min-h-0 w-80 flex-col md:flex">
-            <ToolPanel steps={steps} />
+            <ToolPanel steps={steps} queryStartedAt={queryStartedAt} />
           </div>
         </div>
 
@@ -318,6 +323,7 @@ export function AgentLoopPanel() {
             steps={steps}
             traceEndRef={traceEndMobileRef}
             onClose={() => setTraceOpen(false)}
+            queryStartedAt={queryStartedAt}
           />
         ) : null}
 
@@ -327,26 +333,37 @@ export function AgentLoopPanel() {
               e.preventDefault();
               sendQuery();
             }}
-            className="flex gap-2"
+            className="flex flex-col gap-2"
           >
-            <input
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Ask the agent..."
-              className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              disabled={connectionStatus !== "connected" || isProcessing}
-            />
-            <Button
-              type="submit"
-              disabled={
-                !query.trim() ||
-                connectionStatus !== "connected" ||
-                isProcessing
-              }
-            >
-              Send
-            </Button>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Ask the agent..."
+                className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                disabled={connectionStatus !== "connected" || isProcessing}
+              />
+              <Button
+                type="submit"
+                disabled={
+                  !query.trim() ||
+                  connectionStatus !== "connected" ||
+                  isProcessing
+                }
+              >
+                Send
+              </Button>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={evilToggle}
+                onChange={(e) => setEvilToggle(e.target.checked)}
+                className="rounded border-border"
+              />
+              Inject evil payload (test guardrail blocking)
+            </label>
           </form>
         </div>
       </CardContent>
