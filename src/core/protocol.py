@@ -17,6 +17,13 @@ class MessageType(StrEnum):
     SYSTEM_INTERMEDIATE = "system_intermediate_message"
     SYSTEM_INTERACTION = "system_interaction_message"
     ERROR = "error_message"
+    # Red-team harness (post-5): drive the attack corpus through the action
+    # gate and stream the matrix. RUN is client→server; RESULT/COMPLETE are
+    # server→client. Top-level discriminators so they never collide with the
+    # agent's SYSTEM_INTERMEDIATE steps on the shared /ws endpoint.
+    REDTEAM_RUN = "redteam_run"
+    REDTEAM_RESULT = "redteam_result"
+    REDTEAM_COMPLETE = "redteam_complete"
 
 
 def now_iso() -> str:

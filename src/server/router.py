@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import re
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -41,6 +43,25 @@ _WS_TOKEN_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 logger = structlog.get_logger()
 
 router = APIRouter()
+
+
+@dataclass
+class _ConnectionState:
+    """Per-connection mutable state threaded through the WS message loop.
+
+    Bundles the HITL bridge, the rolling prompt window, and the in-flight agent
+    and red-team tasks so the dispatcher takes one state object instead of a long
+    parameter list.
+    """
+
+    bridge: WebSocketHITLBridge
+    prompt_history: deque[str]
+    agent_task: asyncio.Task[None] | None = None
+    redteam_task: asyncio.Task[None] | None = None
+
+    def in_flight(self) -> list[asyncio.Task[None]]:
+        """The still-running tasks — for teardown cancellation."""
+        return [t for t in (self.agent_task, self.redteam_task) if t is not None and not t.done()]
 
 
 def warn_if_ws_token_malformed() -> None:
@@ -163,6 +184,57 @@ async def _start_agent_run(
     )
 
 
+async def _start_redteam_run(
+    websocket: WebSocket,
+    prior_task: asyncio.Task[None] | None,
+) -> asyncio.Task[None] | None:
+    """Start the red-team battery unless one is already running. Returns the task.
+
+    Each run makes real model calls, so the server bounds it to ONE run per
+    connection: a re-trigger while a battery is in flight is ignored (rather than
+    cancel-and-restart, which a client could loop to burn model quota). The /ws
+    endpoint is loopback-bound with an origin allowlist — that plus this in-flight
+    guard is the cost gate.
+    """
+    if prior_task is not None and not prior_task.done():
+        return prior_task  # already running — ignore the re-trigger
+    if not os.environ.get("LLM_API_KEY"):
+        await websocket.send_json(
+            ws_msg(MessageType.ERROR, "Red-team needs LLM_API_KEY set in mise.local.toml."),
+        )
+        return prior_task
+
+    # Deferred so the router import doesn't cascade into NeMo — see APPROVE_LITERAL.
+    from src.guardrails.classifier import (
+        DEFAULT_EVAL_MODEL,
+        NVIDIA_NIM_BASE_URL,
+        build_rails,
+    )
+    from src.redteam.attacks import CORPUS
+    from src.redteam.service import run_redteam
+
+    api_key = os.environ["LLM_API_KEY"]
+    base_url = os.environ.get("LLM_BASE_URL") or NVIDIA_NIM_BASE_URL
+    model = os.environ.get("LLM_MODEL") or DEFAULT_EVAL_MODEL
+
+    async def _run() -> None:
+        # Build the gate on the event loop, not a worker thread: an LLMRails binds
+        # to the running loop, so off-thread construction risks loop-affinity bugs.
+        # The one-time build cost is paid per run, which the in-flight guard bounds.
+        try:
+            rails = build_rails(api_key=api_key, base_url=base_url, model_name=model)
+            await run_redteam(websocket.send_json, rails, CORPUS)
+        except Exception:
+            logger.exception("redteam_run_error")
+            # Surface the failure to the client; the socket may already be gone.
+            with contextlib.suppress(Exception):
+                await websocket.send_json(
+                    ws_msg(MessageType.ERROR, "Red-team run failed — check server logs."),
+                )
+
+    return asyncio.create_task(_run())
+
+
 async def _accept_ws(websocket: WebSocket) -> bool:
     """Authorize (CSWSH origin / non-browser token) then accept. False ⇒ rejected."""
     if not _ws_authorized(websocket):
@@ -181,22 +253,23 @@ async def _accept_ws(websocket: WebSocket) -> bool:
 async def _handle_client_message(
     websocket: WebSocket,
     data: dict[str, Any],
-    bridge: WebSocketHITLBridge,
-    agent_task: asyncio.Task[None] | None,
-    prompt_history: deque[str],
-) -> asyncio.Task[None] | None:
-    """Dispatch one validated client message; returns the (maybe updated) agent task."""
+    state: _ConnectionState,
+) -> None:
+    """Dispatch one validated client message, updating the connection state in place."""
     msg_type = data.get("type")
     if msg_type == MessageType.USER_MESSAGE:
-        return await _start_agent_run(websocket, data, bridge, agent_task, prompt_history)
-    if msg_type == MessageType.USER_INTERACTION:
+        state.agent_task = await _start_agent_run(
+            websocket, data, state.bridge, state.agent_task, state.prompt_history,
+        )
+    elif msg_type == MessageType.USER_INTERACTION:
         parent_id = data.get("parent_id", "")
         response_text = extract_query(data) or ""
         approved = response_text.strip().lower() == APPROVE_LITERAL
-        bridge.resolve_approval(parent_id, approved=approved)
-        return agent_task
-    await websocket.send_json(ws_msg(MessageType.ERROR, f"Unknown message type: {msg_type}"))
-    return agent_task
+        state.bridge.resolve_approval(parent_id, approved=approved)
+    elif msg_type == MessageType.REDTEAM_RUN:
+        state.redteam_task = await _start_redteam_run(websocket, state.redteam_task)
+    else:
+        await websocket.send_json(ws_msg(MessageType.ERROR, f"Unknown message type: {msg_type}"))
 
 
 @router.websocket("/ws")
@@ -212,11 +285,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         return
 
     session_id = str(uuid.uuid4())
-    bridge = WebSocketHITLBridge()
-    agent_task: asyncio.Task[None] | None = None
     # Rolling window of this connection's USER prompts — fed to the guardrail
     # classifier so it judges each action against the conversation's goal.
-    prompt_history: deque[str] = deque(maxlen=MAX_PROMPT_HISTORY)
+    state = _ConnectionState(
+        bridge=WebSocketHITLBridge(),
+        prompt_history=deque(maxlen=MAX_PROMPT_HISTORY),
+    )
 
     logger.info("ws_connected", session_id=session_id)
 
@@ -236,22 +310,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     ws_msg(MessageType.ERROR, "Message must be a JSON object."),
                 )
                 continue
-            agent_task = await _handle_client_message(
-                websocket, data, bridge, agent_task, prompt_history,
-            )
+            await _handle_client_message(websocket, data, state)
 
     except WebSocketDisconnect:
         logger.info("ws_disconnected", session_id=session_id)
     finally:
-        bridge.cancel_all()
-        if agent_task is not None and not agent_task.done():
-            agent_task.cancel()
+        state.bridge.cancel_all()
+        pending = state.in_flight()
+        for task in pending:
+            task.cancel()
+        if pending:
             # Let NAT session teardown (and OTel flush) complete before returning.
-            # Bounded — if teardown hangs we abandon the task rather than block the WS handler.
+            # Bounded — if teardown hangs we abandon the tasks rather than block the handler.
             try:
                 await asyncio.wait_for(
-                    asyncio.shield(asyncio.gather(agent_task, return_exceptions=True)),
+                    asyncio.shield(asyncio.gather(*pending, return_exceptions=True)),
                     timeout=5.0,
                 )
             except TimeoutError:
-                logger.warning("agent_task_teardown_timeout", session_id=session_id)
+                logger.warning("task_teardown_timeout", session_id=session_id)

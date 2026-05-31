@@ -13,8 +13,16 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from src.core.conversation import MAX_PROMPT_HISTORY
+from src.core.protocol import MessageType
 from src.loop.hitl import APPROVE_OPTION
-from src.server.router import APPROVE_LITERAL, _start_agent_run, _ws_authorized
+from src.server.router import (
+    APPROVE_LITERAL,
+    _ConnectionState,
+    _handle_client_message,
+    _start_agent_run,
+    _start_redteam_run,
+    _ws_authorized,
+)
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -216,3 +224,55 @@ class TestConversationWindowPlumbing:
                 await hanging
         assert captured[1] == ("second request", ("first request",))
         assert hanging.cancelled()
+
+
+class TestRedTeamDispatch:
+    """The /ws loop also drives red-team runs over a separate per-connection task."""
+
+    async def test_redteam_run_without_key_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """REDTEAM_RUN with no LLM_API_KEY surfaces an error, not a crash or silent no-op."""
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        ws = _StubWS()
+        task = await _start_redteam_run(ws, None)  # type: ignore[arg-type]
+        assert task is None
+        ws.send_json.assert_awaited_once()
+        sent = ws.send_json.await_args.args[0]
+        assert sent["type"] == MessageType.ERROR
+
+    async def test_redteam_run_rejected_while_running(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A re-trigger while a battery is in flight is ignored — same task, no new run.
+
+        This is the cost gate: without it a client could loop redteam_run to
+        cancel-and-restart the battery and burn model quota with no upper bound.
+        """
+        monkeypatch.delenv("LLM_API_KEY", raising=False)
+        ws = _StubWS()
+        running: asyncio.Task[None] = asyncio.create_task(asyncio.Event().wait())  # type: ignore[arg-type]
+        try:
+            result = await _start_redteam_run(ws, running)  # type: ignore[arg-type]
+            assert result is running  # the in-flight task is returned unchanged
+            ws.send_json.assert_not_awaited()  # reject precedes even the key check
+        finally:
+            running.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await running
+
+    async def test_redteam_run_dispatches_to_runner(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A redteam_run message routes to the runner and stores its task on the state."""
+        sentinel: Any = object()
+
+        async def _stub_start(_ws: Any, _prior: Any) -> Any:
+            return sentinel
+
+        monkeypatch.setattr("src.server.router._start_redteam_run", _stub_start)
+        state = _ConnectionState(
+            bridge=MagicMock(),
+            prompt_history=deque(maxlen=MAX_PROMPT_HISTORY),
+        )
+        msg = {"type": MessageType.REDTEAM_RUN}
+        await _handle_client_message(_StubWS(), msg, state)  # type: ignore[arg-type]
+        assert state.redteam_task is sentinel
+        assert state.agent_task is None

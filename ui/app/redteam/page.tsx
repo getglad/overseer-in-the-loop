@@ -1,29 +1,29 @@
 import Link from "next/link";
 
-import { AgentLoopPanel } from "@/components/agent-loop/AgentLoopPanel";
+import { RedTeamPanel } from "@/components/redteam/RedTeamPanel";
 
-export default function Home() {
+export default function RedTeamPage() {
   return (
     <main className="flex flex-1 flex-col gap-6 p-6">
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            Agent Auto Mode
+            Red-team the gate
           </h1>
           <p className="text-sm text-muted-foreground">
-            Code-first agent dashboard — HITL approval, observability, policy
-            control
+            Adversarial battery — does the action classifier hold under
+            pressure?
           </p>
         </div>
         <Link
-          href="/redteam"
+          href="/"
           className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
         >
-          Red-team →
+          ← Agent
         </Link>
       </header>
 
-      <AgentLoopPanel />
+      <RedTeamPanel />
     </main>
   );
 }

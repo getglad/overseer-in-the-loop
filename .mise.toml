@@ -37,15 +37,44 @@ description = "Start the FastAPI agent gateway"
 # LAN-reachable bind would let any nearby host drive the agent's file tools.
 run = "uv run uvicorn src.server.app:app --reload --reload-dir src --host 127.0.0.1 --port 8000"
 
+[tasks."build:ui"]
+description = "Build the Next.js UI for production"
+# The demo serves a production `next start` build, never `next dev` — the front end is
+# not the point of the demo, so we keep it off the dev-server/Turbopack path and pin it
+# to the stack that runs cleanly under the mise-managed Node. Cached on the UI sources
+# below: `mise run dev` only rebuilds when the UI actually changes, otherwise it skips
+# straight to serving.
+sources = [
+  "ui/app/**/*",
+  "ui/components/**/*",
+  "ui/lib/**/*",
+  "ui/public/**/*",
+  "ui/package.json",
+  "ui/package-lock.json",
+  "ui/tsconfig.json",
+  "ui/next.config.ts",
+  "ui/postcss.config.mjs",
+]
+outputs = ["ui/.next/BUILD_ID"]
+run = "npm --prefix ui run build"
+
 [tasks."serve:ui"]
-description = "Start the Next.js dev server"
+description = "Serve the production Next.js build on :3000"
 dir = "ui"
-# hivemind injects a per-process PORT (server→5000, ui→5100) and `next dev` honors it,
-# which would otherwise move the UI off :3000. Pin PORT so the UI always lands on :3000
-# (matching the README), whether launched standalone or under hivemind.
+depends = ["build:ui"]
+# hivemind injects a per-process PORT (server→5000, ui→5100) and `next start` honors it,
+# which would otherwise move the UI off :3000. Pin PORT here so the UI always lands on
+# :3000 (matching the README), whether launched standalone or under hivemind.
 env = { PORT = "3000" }
-run = "npm run dev"
+run = "npm run start"
 
 [tasks.dev]
 description = "Start server + UI via hivemind (reads Procfile)"
 run = "hivemind"
+
+[tasks.redteam]
+description = "Run the live red-team battery and print the scorecard (makes real model calls)"
+# Drives the full attack corpus through the real action gate. Exits non-zero on
+# any false-allow, so it doubles as a scheduled regression gate. Not part of
+# `check` — that path is offline and deterministic.
+run = "uv run python -m src.redteam"

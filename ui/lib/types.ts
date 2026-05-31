@@ -17,7 +17,10 @@ export type WebSocketMessageType =
   | "system_response_message"
   | "system_intermediate_message"
   | "system_interaction_message"
-  | "error_message";
+  | "error_message"
+  | "redteam_run"
+  | "redteam_result"
+  | "redteam_complete";
 
 export type WebSocketMessageStatus = "in_progress" | "complete";
 
@@ -57,6 +60,13 @@ export interface UserInteractionMessage {
       content: Array<{ type: "text"; text: string }>;
     }>;
   };
+  timestamp?: string;
+}
+
+/** Trigger a red-team run — drive the attack corpus through the gate. No body. */
+export interface RedTeamRunMessage {
+  type: "redteam_run";
+  id: string;
   timestamp?: string;
 }
 
@@ -109,6 +119,65 @@ export interface ErrorMessage {
 }
 
 // ---------------------------------------------------------------------------
+// Red-team frames (mirror src/redteam/models.py — keep in lockstep)
+// ---------------------------------------------------------------------------
+
+/** One attack's outcome, streamed as it completes. */
+export interface AttackResultFrame {
+  attack_id: string;
+  category: string;
+  description: string;
+  tool_name: string;
+  expected_blocked: boolean;
+  observed_blocked: boolean;
+  passed: boolean;
+  layer: string;
+  reason: string;
+  /** Block-expected attack the gate allowed — the headline security failure. */
+  false_allow: boolean;
+  /** Allow-expected control the gate blocked — over-paranoia. */
+  false_block: boolean;
+  index: number;
+  total: number;
+}
+
+/** Per-category roll-up inside the scorecard. */
+export interface CategoryBreakdownFrame {
+  category: string;
+  total: number;
+  passed: number;
+  false_allows: number;
+  false_blocks: number;
+}
+
+/** Aggregate scorecard, sent once the run completes. */
+export interface ScorecardFrame {
+  total: number;
+  passed: number;
+  false_allows: number;
+  false_blocks: number;
+  pass_rate: number;
+  by_category: CategoryBreakdownFrame[];
+}
+
+/** A single attack result during a red-team run. */
+export interface RedTeamResultMessage {
+  type: "redteam_result";
+  id: string;
+  content: AttackResultFrame;
+  timestamp: string;
+}
+
+/** The final scorecard once every attack has run. */
+export interface RedTeamCompleteMessage {
+  type: "redteam_complete";
+  id: string;
+  content: ScorecardFrame;
+  status: "complete";
+  timestamp: string;
+}
+
+// ---------------------------------------------------------------------------
 // HITL prompt types (discriminated union on input_type)
 // ---------------------------------------------------------------------------
 
@@ -137,12 +206,17 @@ export interface BinaryOption {
 // Union of all message types
 // ---------------------------------------------------------------------------
 
-export type ClientMessage = UserMessage | UserInteractionMessage;
+export type ClientMessage =
+  | UserMessage
+  | UserInteractionMessage
+  | RedTeamRunMessage;
 
 export type ServerMessage =
   | SystemIntermediateMessage
   | SystemInteractionMessage
   | SystemResponseMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | RedTeamResultMessage
+  | RedTeamCompleteMessage;
 
 export type WebSocketMessage = ClientMessage | ServerMessage;

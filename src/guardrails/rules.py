@@ -76,7 +76,7 @@ PROTECTED_PATH_PREFIXES: tuple[str, ...] = (
 # string searched FOR — is matched by ``_SECRET_CONTENT_RE`` (key material only).
 #
 # This is a high-signal heuristic, not an exhaustive registry — a credential
-# filename it doesn't recognize falls through to ALLOW (the post-5 OpenShell
+# filename it doesn't recognize falls through to ALLOW (the post-6 OpenShell
 # policy layer is where exhaustive, allowlist-based control lives). Deliberately
 # EXCLUDED to protect the auto-mode payoff (escalating these would prompt on
 # everyday reads without catching real secrets):

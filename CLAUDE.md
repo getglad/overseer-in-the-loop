@@ -19,21 +19,34 @@ src/
 │   ├── hitl.py        prompt_binary_approval() + APPROVE/REJECT options
 │   ├── prompts.py     Jinja templates + AGENT_SYSTEM_PROMPT
 │   └── react_steps.py custom ReAct register — native LLM IntermediateSteps, no monkey-patch
-└── tools/          File-system tool suite (LangChain wrappers + custom edit_file)
-    ├── edit.py            OpenCode-inspired 9-strategy targeted string replacement
-    └── tool_registry.py   FunctionGroup wiring + HITL approval middleware
+├── tools/          File-system tool suite (LangChain wrappers + custom edit_file)
+│   ├── edit.py            OpenCode-inspired 9-strategy targeted string replacement
+│   └── tool_registry.py   FunctionGroup wiring + HITL approval middleware
+├── guardrails/     Action classifier — rules fast-path + LLM judgment (A1-A7)
+│   ├── rules.py          deterministic allow/block patterns
+│   ├── classifier.py     classify() + build_rails + AuditTrail
+│   ├── middleware.py     ClassifierMiddleware (FunctionGroup gate)
+│   └── prompts.py        A1-A7 taxonomy + trust-boundary eval template
+└── redteam/        Adversarial battery — drives attacks past refusal into the gate
+    ├── attacks.py        Attack record + the code-first corpus
+    ├── harness.py        run_attack / run_corpus
+    ├── models.py         AttackResult + Scorecard (+ Pydantic wire frames)
+    └── service.py        transport-agnostic run_redteam() streaming
 
 ui/                 Next.js 16 + Tailwind 4 + shadcn/ui
-├── app/               app-router shell
+├── app/               app-router shell (/, /redteam)
 ├── components/
 │   ├── agent-loop/    AgentLoopPanel + step rendering
+│   ├── redteam/       RedTeamPanel — streamed attack→decision matrix + scorecard
 │   └── ui/            shadcn primitives
 └── lib/
-    ├── types.ts       TS mirror of src/core/protocol.py
+    ├── types.ts       TS mirror of src/core/protocol.py + src/redteam/models.py
     └── ws-client.ts   WebSocket client manager
 
 tests/
 ├── loop/              fixtures + HITL/OTel tests
+├── guardrails/        rules + classifier + middleware
+├── redteam/           corpus integrity + harness + deterministic rules tier
 └── server/            REST endpoint tests
 ```
 
@@ -43,11 +56,11 @@ New post-3+ domain folders (`src/tools/`, `src/guardrails/`, etc.) sit alongside
 
 These hold across every post commit. Touching them requires explicit discussion.
 
-1. **NAT is a library, never a server.** The FastAPI gateway in `src/server/app.py` embeds NAT via `WorkflowBuilder`. We never use `nat serve`. This is what lets later posts insert guardrails (post-4), policy validators (post-5), and red-team harnesses (post-7) as in-process layers around the agent.
+1. **NAT is a library, never a server.** The FastAPI gateway in `src/server/app.py` embeds NAT via `WorkflowBuilder`. We never use `nat serve`. This is what lets later posts insert guardrails (post-4), red-team harnesses (post-5), and policy validators (post-6) as in-process layers around the agent.
 2. **HITL gates every tool call.** Two patterns coexist: (a) per-tool wrapping inside the function body — used by `hitl_current_datetime` in `src/loop/agent.py`. (b) `FunctionGroup` middleware — `HITLApprovalMiddleware` in `src/tools/tool_registry.py` gates every tool in the group at once. NAT's ReAct agent has no pre-tool-call hook, so both patterns intercept INSIDE the tool. Middleware must be name-registered (`@register_middleware` + `add_middleware`); constructor injection gets clobbered by NAT's builder.
 3. **Service layer is transport-agnostic.** `src/loop/service.py::run_agent` takes a `SendFn` callback, not a WebSocket. The router passes `websocket.send_json`; tests pass a list-accumulating mock. Every future post-domain follows this pattern.
 4. **Three-layer dependency direction: `server → loop → core`.** No inverse runtime imports. `core/` has zero NAT or FastAPI coupling (so the `uvicorn --reload` watcher and lint/typecheck run without the NAT extra). Future post-3+ domains (`tools/`, `guardrails/`, `policy/`) are siblings to `loop/`, depending on `core/`. Two narrow, deliberate exceptions: (a) a type-only `TYPE_CHECKING` reference from `loop/` to `server/` (the `WebSocketHITLBridge` annotation in `service.py`); (b) `src/loop/hitl.py` is the **shared HITL primitive** — it is NAT-coupled (uses `nat.builder.context`/`nat.data_models.interactive`) so it *cannot* live in the NAT-free `core/`, and sibling domains (`guardrails/`) import it directly. `loop/` also acts as the composition layer that wires a sibling's middleware config (e.g. `ClassifierConfig`) into the builder. Nothing beyond these.
-5. **Code-first.** Python is the source of truth. YAML, when produced (e.g. OpenShell policies in post-5), is a serialization artifact emitted by code — never hand-authored.
+5. **Code-first.** Python is the source of truth. YAML, when produced (e.g. OpenShell policies in post-6), is a serialization artifact emitted by code — never hand-authored. The red-team corpus (post-5) follows the same rule: attacks are typed Python records, not a YAML/JSON fixture pile.
 
 ## Tooling
 
