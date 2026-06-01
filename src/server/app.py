@@ -94,7 +94,7 @@ async def lifespan(application: FastAPI) -> AsyncGenerator[None]:
 
 
 app = FastAPI(
-    title="Agent Auto Mode",
+    title="Overseer-in-the-loop",
     description="Code-first NAT agent loop with HITL approval, exposed over WebSocket.",
     version="0.1.0",
     lifespan=lifespan,

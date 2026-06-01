@@ -149,7 +149,7 @@ class AgentSettings:
     top_p: float = 1.0
     max_tokens: int = 4096
     otel_endpoint: str | None = field(default_factory=_default_otel_endpoint)
-    otel_project: str = "agent-auto-mode"
+    otel_project: str = "overseer-in-the-loop"
     workspace_root: Path = field(default_factory=_default_workspace_root)
 
 
@@ -201,7 +201,7 @@ async def configure_telemetry(
     builder: WorkflowBuilder,
     *,
     endpoint: str | None,
-    project: str = "agent-auto-mode",
+    project: str = "overseer-in-the-loop",
 ) -> None:
     """Add OTel tracing to the workflow builder if an endpoint is configured.
 

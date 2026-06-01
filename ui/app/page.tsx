@@ -8,7 +8,7 @@ export default function Home() {
       <header className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-            Agent Auto Mode
+            Overseer-in-the-loop
           </h1>
           <p className="text-sm text-muted-foreground">
             Code-first agent dashboard — HITL approval, observability, policy

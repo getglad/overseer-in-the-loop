@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Agent Auto Mode",
+  title: "Overseer-in-the-loop",
   description: "Code-first agent dashboard with HITL approval",
 };
 
